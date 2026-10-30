@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WLF-Log – Workout Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@1,700;1,800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+tailwind.config={theme:{extend:{fontFamily:{display:['"Barlow Condensed"','Impact','sans-serif'],body:['Barlow','system-ui','sans-serif']},colors:{ember:'#ff5a1f',iron:'#121316',plate:'#1c1d22',chalk:'#f2efe9'}}}};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<style>
+:root{box-sizing:border-box;color-scheme:dark;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px);background:#121316}
+body{height:100%;margin:0;background:#121316;color:#f2efe9;font-family:Barlow,system-ui,sans-serif;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+#root{height:100%}
+input,button{font-family:inherit}
+input{font-size:18px}
+button{touch-action:manipulation}
+button:focus-visible,input:focus-visible{outline:2px solid #ff5a1f;outline-offset:2px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {useState,useEffect,useMemo}=React;
+const html=htm.bind(React.createElement);
+
+/* ---------- Tiện ích ---------- */
+const ls={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+async function hashPw(pw,salt){try{const b=new TextEncoder().encode(salt+pw);const d=await crypto.subtle.digest('SHA-256',b);return Array.from(new Uint8Array(d)).map(x=>x.toString(16).padStart(2,'0')).join('')}catch(e){let h=5381;const s=salt+pw;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return 'f'+h}}
+const uid=()=>Math.random().toString(36).slice(2,9);
+const num=v=>parseFloat(String(v).replace(',','.'));
+const fmtKg=n=>Number.isInteger(n)?String(n):String(+n.toFixed(2));
+const fmtDate=iso=>new Date(iso).toLocaleDateString('vi-VN',{weekday:'short',day:'2-digit',month:'2-digit'});
+
+const SPLITS={
+  Push:['Incline Dumbbell Press','Bench Press','Overhead Press','Lateral Raise','Tricep Pushdown'],
+  Pull:['Pull Up','Barbell Row','Lat Pulldown','Face Pull','Barbell Curl'],
+  Legs:['Squat','Romanian Deadlift','Leg Press','Leg Curl','Calf Raise'],
+  Upper:['Bench Press','Barbell Row','Overhead Press','Lat Pulldown','Dumbbell Curl','Tricep Pushdown'],
+  Lower:['Squat','Romanian Deadlift','Walking Lunge','Leg Curl','Calf Raise']
+};
+const same=(a,b)=>a.toLowerCase()===b.toLowerCase();
+const lastOf=(ss,name)=>{for(const s of ss){const e=s.exercises.find(e=>same(e.name,name));if(e)return{date:s.date,sets:e.sets}}return null};
+const trendOf=(ss,name)=>{const out=[];for(const s of ss){const e=s.exercises.find(e=>same(e.name,name));if(e)out.push(Math.max(...e.sets.map(x=>x.kg)));if(out.length>=6)break}return out.reverse()};
+const hint=l=>{if(!l)return null;const mx=Math.max(...l.sets.map(s=>s.kg));
+  if(l.sets.every(s=>s.reps>=10))return{kg:mx+2.5,text:'Lần trước đủ 10 reps ở mọi set. Thử tăng lên '+fmtKg(mx+2.5)+'kg.'};
+  return{kg:mx,text:'Giữ '+fmtKg(mx)+'kg và cố thêm 1 rep mỗi set.'}};
+const mkEx=(name,ss)=>{const l=lastOf(ss,name);return{id:uid(),name,sets:l?l.sets.map(s=>({kg:fmtKg(s.kg),reps:String(s.reps)})):[0,1,2].map(()=>({kg:'',reps:''}))}};
+
+/* ---------- Đăng nhập / Đăng ký ---------- */
+function Auth({onAuth}){
+  const [mode,setMode]=useState('login');
+  const [u,setU]=useState('');const [p,setP]=useState('');const [p2,setP2]=useState('');
+  const [err,setErr]=useState('');const [busy,setBusy]=useState(false);
+  const submit=async e=>{
+    e.preventDefault();setErr('');
+    const name=u.trim().toLowerCase();
+    if(name.length<3)return setErr('Tên đăng nhập cần ít nhất 3 ký tự.');
+    if(p.length<6)return setErr('Mật khẩu cần ít nhất 6 ký tự.');
+    const users=ls.get('wt_users',{});
+    setBusy(true);
+    if(mode==='register'){
+      if(p!==p2){setBusy(false);return setErr('Mật khẩu nhập lại chưa khớp.')}
+      if(users[name]){setBusy(false);return setErr('Tên đăng nhập này đã có người dùng. Hãy chọn tên khác.')}
+      const salt=uid()+uid();users[name]={salt,hash:await hashPw(p,salt)};ls.set('wt_users',users);onAuth(name);
+    }else{
+      const rec=users[name];
+      if(!rec||rec.hash!==await hashPw(p,rec.salt)){setBusy(false);return setErr('Sai tên đăng nhập hoặc mật khẩu.')}
+      onAuth(name);
+    }
+  };
+  const field='w-full h-14 px-4 rounded-xl bg-plate border border-white/10 text-chalk placeholder-zinc-500';
+  return html`<div className="h-full flex flex-col justify-end px-6 pb-8 bg-iron overflow-y-auto" style=${{backgroundImage:'linear-gradient(180deg,#121316 0%,#121316 45%,#2a1409 100%)'}}>
+    <div className="max-w-md w-full mx-auto">
+      <h1 className="font-display italic font-extrabold text-7xl leading-[0.9] text-chalk">Iron<br/>Log</h1>
+      <p className="mt-3 mb-8 text-zinc-400 text-lg">Ghi lại từng set. Mỗi buổi nặng hơn buổi trước.</p>
+      <form onSubmit=${submit} className="flex flex-col gap-3">
+        <input className=${field} placeholder="Tên đăng nhập" value=${u} onChange=${e=>setU(e.target.value)} autoCapitalize="none" autoComplete="username"/>
+        <input className=${field} type="password" placeholder="Mật khẩu" value=${p} onChange=${e=>setP(e.target.value)} autoComplete=${mode==='login'?'current-password':'new-password'}/>
+        ${mode==='register'&&html`<input className=${field} type="password" placeholder="Nhập lại mật khẩu" value=${p2} onChange=${e=>setP2(e.target.value)} autoComplete="new-password"/>`}
+        ${err&&html`<p className="text-red-400 text-base">${err}</p>`}
+        <button type="submit" disabled=${busy} className="h-14 rounded-xl bg-ember text-black font-display italic font-extrabold text-2xl active:scale-[0.98] disabled:opacity-60">${mode==='login'?'Đăng nhập':'Tạo tài khoản'}</button>
+      </form>
+      <button onClick=${()=>{setMode(mode==='login'?'register':'login');setErr('')}} className="mt-5 w-full h-12 text-zinc-300 text-base">
+        ${mode==='login'?'Chưa có tài khoản? Đăng ký':'Đã có tài khoản? Đăng nhập'}
+      </button>
+    </div>
+  </div>`;
+}
+
+/* ---------- Thẻ bài tập ---------- */
+function Stepper({value,unit,mode,onChange,onStep}){
+  return html`<div className="flex-1 min-w-0 flex items-center rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+    <button type="button" aria-label="Giảm" onClick=${()=>onStep(-1)} className="w-9 h-12 shrink-0 text-2xl text-zinc-400 active:bg-white/10">−</button>
+    <div className="relative flex-1 min-w-0">
+      <input value=${value} onChange=${e=>onChange(e.target.value)} inputMode=${mode} placeholder="0" className="w-full h-12 pt-1 bg-transparent text-center font-bold text-chalk outline-none"/>
+      <span className="absolute inset-x-0 bottom-0.5 text-center text-[10px] text-zinc-500 pointer-events-none">${unit}</span>
+    </div>
+    <button type="button" aria-label="Tăng" onClick=${()=>onStep(1)} className="w-9 h-12 shrink-0 text-2xl text-zinc-400 active:bg-white/10">+</button>
+  </div>`;
+}
+
+function ExCard({ex,sessions,onChange,onRemove}){
+  const last=lastOf(sessions,ex.name),trend=trendOf(sessions,ex.name),h=hint(last);
+  const setSet=(i,k,v)=>onChange({...ex,sets:ex.sets.map((s,j)=>j===i?{...s,[k]:v}:s)});
+  const step=(i,k,dir)=>{const cur=num(ex.sets[i][k])||0;setSet(i,k,fmtKg(Math.max(0,cur+dir*(k==='kg'?2.5:1))))};
+  const addSet=()=>{const l=ex.sets[ex.sets.length-1]||{kg:'',reps:''};onChange({...ex,sets:[...ex.sets,{...l}]})};
+  const delSet=i=>onChange({...ex,sets:ex.sets.filter((_,j)=>j!==i)});
+  const apply=()=>onChange({...ex,sets:ex.sets.map(s=>({...s,kg:fmtKg(h.kg)}))});
+  const canApply=h&&ex.sets.some(s=>num(s.kg)!==h.kg);
+  const mx=trend.length?Math.max(...trend):1;
+  return html`<section className="bg-plate border-y border-white/5 px-4 py-4">
+    <div className="flex items-start justify-between gap-3">
+      <h3 className="font-display italic font-bold text-3xl leading-none text-chalk">${ex.name}</h3>
+      <button onClick=${onRemove} aria-label="Xoá bài tập" className="w-10 h-10 -mr-2 -mt-2 text-zinc-500 text-xl active:text-red-400">✕</button>
+    </div>
+    ${last?html`<div className="mt-2 flex items-end justify-between gap-3">
+      <div className="text-sm text-zinc-400">
+        <div>Lần trước (${fmtDate(last.date)})</div>
+        <div className="text-chalk/90 font-medium">${last.sets.map(s=>fmtKg(s.kg)+'kg x '+s.reps).join(',  ')}</div>
+      </div>
+      ${trend.length>1&&html`<div className="flex items-end gap-1 h-9 shrink-0" title="Mức tạ cao nhất các buổi gần đây">${trend.map((k,i)=>html`<div key=${i} className=${'w-2.5 rounded-sm '+(i===trend.length-1?'bg-ember':'bg-white/25')} style=${{height:Math.max(18,k/mx*100)+'%'}}></div>`)}</div>`}
+    </div>`:html`<p className="mt-2 text-sm text-zinc-500">Chưa có lịch sử. Buổi này sẽ là mốc để so sánh.</p>`}
+    ${h&&html`<div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-ember/10 border border-ember/30 px-3 py-2">
+      <p className="text-sm text-ember leading-snug">${h.text}</p>
+      ${canApply&&html`<button onClick=${apply} className="shrink-0 h-9 px-3 rounded-lg bg-ember text-black text-sm font-semibold active:scale-95">Áp dụng</button>`}
+    </div>`}
+    <div className="mt-3 flex flex-col gap-2">
+      ${ex.sets.map((s,i)=>html`<div key=${i} className="flex items-center gap-1.5">
+        <span className="w-5 text-center text-sm font-bold text-zinc-500">${i+1}</span>
+        <${Stepper} value=${s.kg} unit="kg" mode="decimal" onChange=${v=>setSet(i,'kg',v)} onStep=${d=>step(i,'kg',d)}/>
+        <${Stepper} value=${s.reps} unit="reps" mode="numeric" onChange=${v=>setSet(i,'reps',v)} onStep=${d=>step(i,'reps',d)}/>
+        <button onClick=${()=>delSet(i)} aria-label="Xoá set" className="w-7 h-12 text-zinc-600 active:text-red-400">✕</button>
+      </div>`)}
+    </div>
+    <button onClick=${addSet} className="mt-3 w-full h-12 rounded-xl border border-dashed border-white/20 text-zinc-300 font-medium active:bg-white/5">+ Thêm set</button>
+  </section>`;
+}
+
+/* ---------- Màn hình tập ---------- */
+function Train({data,setData,say}){
+  const {sessions,draft}=data;
+  const [name,setName]=useState('');const [confirmDrop,setConfirmDrop]=useState(false);
+  const names=useMemo(()=>[...new Set([...Object.values(SPLITS).flat(),...sessions.flatMap(s=>s.exercises.map(e=>e.name))])],[sessions]);
+  const start=type=>setData(d=>({...d,draft:{type,exercises:SPLITS[type].map(n=>mkEx(n,d.sessions))}}));
+  const upd=fn=>setData(d=>({...d,draft:fn(d.draft)}));
+  const addEx=()=>{const n=name.trim();if(!n)return;upd(dr=>({...dr,exercises:[...dr.exercises,mkEx(n,sessions)]}));setName('')};
+  const save=()=>{
+    const exs=draft.exercises.map(e=>({name:e.name,sets:e.sets.filter(s=>s.kg!==''&&!isNaN(num(s.kg))&&num(s.reps)>0).map(s=>({kg:num(s.kg),reps:num(s.reps)}))})).filter(e=>e.sets.length);
+    if(!exs.length)return say('Nhập ít nhất 1 set có đủ kg và reps.');
+    setData(d=>({sessions:[{id:uid(),date:new Date().toISOString(),type:draft.type,exercises:exs},...d.sessions],draft:null}));
+    say('Đã lưu buổi tập '+draft.type+'.');
+  };
+
+  if(!draft){
+    return html`<div className="px-4 pt-5 pb-6">
+      <h2 className="font-display italic font-extrabold text-5xl leading-none">Hôm nay tập gì?</h2>
+      <p className="mt-2 mb-5 text-zinc-400">Chọn buổi tập. Mức tạ lần trước sẽ được điền sẵn.</p>
+      <div className="grid grid-cols-2 gap-3">
+        ${Object.keys(SPLITS).map((t,i)=>{const l=sessions.find(s=>s.type===t);
+          return html`<button key=${t} onClick=${()=>start(t)} className=${'text-left rounded-2xl p-4 min-h-[112px] flex flex-col justify-between active:scale-[0.97] transition-transform '+(i===0?'col-span-2 bg-ember text-black':'bg-plate border border-white/10 text-chalk')}>
+            <span className="font-display italic font-extrabold text-5xl leading-none">${t}</span>
+            <span className=${'text-sm '+(i===0?'text-black/70':'text-zinc-400')}>${l?'Tập gần nhất: '+fmtDate(l.date):'Chưa tập lần nào'}</span>
+          </button>`})}
+      </div>
+    </div>`;
+  }
+
+  return html`<div>
+    <div className="px-4 pt-5 pb-4 flex items-center justify-between">
+      <h2 className="font-display italic font-extrabold text-6xl leading-none text-ember">${draft.type}</h2>
+      <button onClick=${()=>{if(confirmDrop){setData(d=>({...d,draft:null}));setConfirmDrop(false)}else{setConfirmDrop(true);setTimeout(()=>setConfirmDrop(false),3000)}}} className=${'h-10 px-4 rounded-lg text-sm font-semibold '+(confirmDrop?'bg-red-500 text-white':'bg-plate text-zinc-300 border border-white/10')}>${confirmDrop?'Bấm lần nữa để bỏ buổi này':'Đổi buổi'}</button>
+    </div>
+    <div className="flex flex-col gap-2">
+      ${draft.exercises.map(ex=>html`<${ExCard} key=${ex.id} ex=${ex} sessions=${sessions}
+        onChange=${n=>upd(dr=>({...dr,exercises:dr.exercises.map(x=>x.id===ex.id?n:x)}))}
+        onRemove=${()=>upd(dr=>({...dr,exercises:dr.exercises.filter(x=>x.id!==ex.id)}))}/>`)}
+    </div>
+    <div className="px-4 py-4 flex gap-2">
+      <input list="exnames" value=${name} onChange=${e=>setName(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&addEx()} placeholder="Thêm bài tập khác" className="flex-1 min-w-0 h-12 px-4 rounded-xl bg-plate border border-white/10 placeholder-zinc-500"/>
+      <datalist id="exnames">${names.map(n=>html`<option key=${n} value=${n}/>`)}</datalist>
+      <button onClick=${addEx} className="h-12 px-5 rounded-xl bg-white/10 font-semibold active:bg-white/20">Thêm</button>
+    </div>
+    <div className="sticky bottom-0 px-4 pt-6 pb-4" style=${{background:'linear-gradient(180deg,rgba(18,19,22,0),#121316 45%)'}}>
+      <button onClick=${save} className="w-full h-16 rounded-2xl bg-ember text-black font-display italic font-extrabold text-3xl active:scale-[0.98] transition-transform">Lưu buổi tập</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- Lịch sử ---------- */
+function History({sessions,onDelete}){
+  const [cf,setCf]=useState(null);
+  if(!sessions.length)return html`<div className="px-6 pt-16 text-center">
+    <p className="font-display italic font-extrabold text-4xl">Chưa có buổi tập nào</p>
+    <p className="mt-2 text-zinc-400">Lưu buổi tập đầu tiên để bắt đầu theo dõi mức tạ.</p></div>`;
+  return html`<div className="px-4 pt-5 pb-6">
+    <h2 className="font-display italic font-extrabold text-5xl leading-none mb-4">Lịch sử</h2>
+    <div className="flex flex-col gap-3">
+      ${sessions.map(s=>{const vol=s.exercises.reduce((a,e)=>a+e.sets.reduce((b,x)=>b+x.kg*x.reps,0),0);
+        return html`<article key=${s.id} className="bg-plate border border-white/5 rounded-2xl p-4">
+          <div className="flex items-baseline justify-between">
+            <h3 className="font-display italic font-extrabold text-4xl text-ember leading-none">${s.type}</h3>
+            <span className="text-sm text-zinc-400">${fmtDate(s.date)}</span>
+          </div>
+          <p className="text-sm text-zinc-400 mt-1">Tổng khối lượng ${Math.round(vol).toLocaleString('vi-VN')} kg</p>
+          <div className="mt-3 flex flex-col gap-2">
+            ${s.exercises.map(e=>html`<div key=${e.name}>
+              <div className="font-semibold">${e.name}</div>
+              <div className="text-sm text-zinc-300">${e.sets.map(x=>fmtKg(x.kg)+'kg x '+x.reps).join(',  ')}</div>
+            </div>`)}
+          </div>
+          <button onClick=${()=>{if(cf===s.id){onDelete(s.id);setCf(null)}else setCf(s.id)}} className=${'mt-3 h-10 px-3 rounded-lg text-sm '+(cf===s.id?'bg-red-500 text-white font-semibold':'text-zinc-500')}>${cf===s.id?'Bấm lần nữa để xoá':'Xoá buổi này'}</button>
+        </article>`})}
+    </div>
+  </div>`;
+}
+
+/* ---------- Tài khoản ---------- */
+function Profile({user,sessions,onLogout}){
+  const week=sessions.filter(s=>Date.now()-new Date(s.date)<7*864e5).length;
+  return html`<div className="px-4 pt-5">
+    <h2 className="font-display italic font-extrabold text-5xl leading-none">${user}</h2>
+    <div className="mt-5 grid grid-cols-2 gap-3">
+      <div className="bg-plate rounded-2xl p-4"><div className="font-display italic font-extrabold text-5xl text-ember">${sessions.length}</div><div className="text-sm text-zinc-400">Buổi đã tập</div></div>
+      <div className="bg-plate rounded-2xl p-4"><div className="font-display italic font-extrabold text-5xl text-ember">${week}</div><div className="text-sm text-zinc-400">Buổi trong 7 ngày qua</div></div>
+    </div>
+    <p className="mt-5 text-sm text-zinc-500 leading-relaxed">Dữ liệu và tài khoản chỉ được lưu trong trình duyệt của thiết bị này. Xoá dữ liệu trình duyệt sẽ làm mất lịch sử tập.</p>
+    <button onClick=${onLogout} className="mt-6 w-full h-14 rounded-xl border border-white/15 font-semibold active:bg-white/5">Đăng xuất</button>
+  </div>`;
+}
+
+/* ---------- Khung chính ---------- */
+function Main({user,onLogout}){
+  const key='wt_data_'+user;
+  const [data,setData]=useState(()=>ls.get(key,{sessions:[],draft:null}));
+  const [tab,setTab]=useState('train');
+  const [toast,setToast]=useState('');
+  useEffect(()=>{ls.set(key,data)},[data]);
+  useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),2400);return()=>clearTimeout(t)},[toast]);
+  const tabs=[['train','🏋️','Tập'],['history','📈','Lịch sử'],['me','👤','Tài khoản']];
+  return html`<div className="h-full flex flex-col max-w-xl mx-auto w-full">
+    <main className="flex-1 overflow-y-auto">
+      ${tab==='train'&&html`<${Train} data=${data} setData=${setData} say=${setToast}/>`}
+      ${tab==='history'&&html`<${History} sessions=${data.sessions} onDelete=${id=>setData(d=>({...d,sessions:d.sessions.filter(s=>s.id!==id)}))}/>`}
+      ${tab==='me'&&html`<${Profile} user=${user} sessions=${data.sessions} onLogout=${onLogout}/>`}
+    </main>
+    ${toast&&html`<div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-20 px-5 py-3 rounded-xl bg-chalk text-black font-semibold shadow-lg max-w-[90%] text-center">${toast}</div>`}
+    <nav className="grid grid-cols-3 bg-plate border-t border-white/10">
+      ${tabs.map(([k,ic,label])=>html`<button key=${k} onClick=${()=>setTab(k)} className=${'h-16 flex flex-col items-center justify-center gap-0.5 text-sm font-semibold '+(tab===k?'text-ember':'text-zinc-500')}>
+        <span className="text-xl leading-none">${ic}</span>${label}</button>`)}
+    </nav>
+  </div>`;
+}
+
+function App(){
+  const [user,setUser]=useState(()=>ls.get('wt_session',null));
+  if(!user)return html`<${Auth} onAuth=${u=>{ls.set('wt_session',u);setUser(u)}}/>`;
+  return html`<${Main} key=${user} user=${user} onLogout=${()=>{ls.set('wt_session',null);setUser(null)}}/>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
